@@ -7,8 +7,10 @@ playback is an open source recording software similar to obs but unlike obs made
 
 
 #how do i move elements
+
 unlike in obs or streamlabs to move elements you need to hold ctrl
 
 #how do i resize elements
+
 put you cursor at the element you want to resize and use the scroll wheel
 
