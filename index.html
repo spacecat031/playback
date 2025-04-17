@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Playback</title>
+  <style>
+    body {
+      margin: 0;
+      background-color: #1e1e1e;
+      font-family: Segoe UI, sans-serif;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #content {
+      flex: 1;
+      display: flex;
+      padding: 10px;
+    }
+    #sources-panel {
+      width: 250px;
+      background-color: #2a2a2a;
+      border-right: 1px solid #444;
+      display: flex;
+      flex-direction: column;
+    }
+    #sources-header {
+      padding: 10px;
+      font-weight: bold;
+      border-bottom: 1px solid #444;
+    }
+    #source-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    .source-item {
+      padding: 6px 10px;
+      background-color: #3a3a3a;
+      margin-bottom: 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #add-source {
+      background-color: #0078D4;
+      color: white;
+      padding: 10px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+      font-size: 16px;
+      border-top: 1px solid #444;
+    }
+    #add-source:hover {
+      background-color: #005a9e;
+    }
+    #preview-area {
+      flex: 1;
+      background-color: #121212;
+      margin-left: 10px;
+      position: relative;
+      overflow: hidden;
+    }
+    video {
+      position: absolute;
+      cursor: move;
+      z-index: 10;
+      border: 2px solid transparent;
+      transition: border 0.2s ease;
+    }
+    .video-draggable:hover {
+      border: 2px dashed rgba(0,120,212,0.8);
+    }
+    .video-resizable:hover {
+      border: 2px solid rgba(0,120,212,0.5);
+    }
+    #controls {
+      background-color: #2a2a2a;
+      padding: 10px;
+      display: flex;
+      justify-content: space-between;
+      border-top: 1px solid #444;
+    }
+    .control-btn {
+      background-color: #0078D4;
+      color: white;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .control-btn:disabled {
+      background-color: #555;
+      cursor: default;
+    }
+    /* Audio mixer */
+    #audio-mixer {
+      width: 250px;
+      background-color: #2a2a2a;
+      border-left: 1px solid #444;
+      padding: 10px;
+    }
+    #audio-mixer h3 {
+      margin: 0 0 8px;
+      color: #fff;
+    }
+    #mic-volume-slider {
+      width: 100%;
+    }
+    #mic-loudness-bar {
+      background: #555;
+      height: 10px;
+      border-radius: 4px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    #mic-loudness-level {
+      background: #0078D4;
+      height: 100%;
+      width: 0%;
+    }
+    /* Popup */
+    #source-popup {
+      display: none;
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #333;
+      padding: 20px;
+      border-radius: 8px;
+      z-index: 1000;
+    }
+    .popup-button {
+      margin: 5px;
+      padding: 8px 12px;
+      background: #0078D4;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .popup-button:hover {
+      background: #005a9e;
+    }
+  </style>
+</head>
+<body>
+  <div id="content">
+    <div id="sources-panel">
+      <div id="sources-header">Sources</div>
+      <div id="source-list"></div>
+      <button id="add-source">+</button>
+    </div>
+
+    <div id="preview-area"></div>
+
+    <div id="audio-mixer">
+      <h3>Audio Mixer</h3>
+      <label>Mic Volume</label>
+      <input id="mic-volume-slider" type="range" min="0" max="1" step="0.01" value="0.5"/>
+      <div id="mic-loudness-bar"><div id="mic-loudness-level"></div></div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button id="start-recording" class="control-btn">Start Recording</button>
+    <button id="stop-recording" class="control-btn" disabled>Stop Recording</button>
+  </div>
+
+  <div id="source-popup">
+    <h3>Add a Source</h3>
+    <button class="popup-button" id="screen-source">Screen</button>
+    <button class="popup-button" id="webcam-source">Webcam</button>
+    <button class="popup-button" id="close-popup">Close</button>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const addBtn = document.getElementById('add-source');
+    const sourcePopup = document.getElementById('source-popup');
+    const previewArea = document.getElementById('preview-area');
+    const sourceList = document.getElementById('source-list');
+    const closePopupBtn = document.getElementById('close-popup');
+    const startBtn = document.getElementById('start-recording');
+    const stopBtn = document.getElementById('stop-recording');
+    const micSlider = document.getElementById('mic-volume-slider');
+    const loudnessLevel = document.getElementById('mic-loudness-level');
+
+    let mediaRecorder, recordedChunks = [], micStream, audioCtx, analyser, gainNode;
+
+    addBtn.onclick = () => sourcePopup.style.display = 'block';
+    closePopupBtn.onclick = () => sourcePopup.style.display = 'none';
+
+    async function addScreen() {
+      const sources = await ipcRenderer.invoke('getScreens');
+      const src = sources[0];
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video:{ mandatory:{ chromeMediaSource:'desktop', chromeMediaSourceId:src.id }}
+      });
+      attachVideo(stream, 'Screen Source');
+    }
+
+    function addWebcam() {
+      navigator.mediaDevices.getUserMedia({ video:true, audio:true })
+        .then(s=> attachVideo(s,'Webcam Source'));
+    }
+
+    function attachVideo(stream,label) {
+      const vid = document.createElement('video');
+      vid.srcObject = stream;
+      vid.play();
+      vid.style.width='300px'; vid.style.height='200px';
+      vid.classList.add('video-draggable','video-resizable');
+      previewArea.appendChild(vid);
+      makeDraggable(vid);
+      makeResizable(vid);
+      const div=document.createElement('div');
+      div.className='source-item'; div.innerText=label;
+      sourceList.appendChild(div);
+      sourcePopup.style.display='none';
+    }
+
+    document.getElementById('screen-source').onclick = addScreen;
+    document.getElementById('webcam-source').onclick = addWebcam;
+
+    // CTRL + drag
+    function makeDraggable(el) {
+      let dragging=false,ox,oy;
+      document.addEventListener('keydown',e=>{ if(e.key==='Control') el._ctrl=true });
+      document.addEventListener('keyup',e=>{ if(e.key==='Control') el._ctrl=false });
+      el.onmousedown = e => {
+        if(!el._ctrl) return;
+        dragging=true;
+        ox=e.clientX-el.getBoundingClientRect().left;
+        oy=e.clientY-el.getBoundingClientRect().top;
+        document.onmousemove = m => {
+          if(dragging){
+            el.style.left=(m.clientX-ox)+'px';
+            el.style.top=(m.clientY-oy)+'px';
+          }
+        };
+        document.onmouseup = ()=>dragging=false;
+      };
+    }
+
+    // Scroll‐wheel resize
+    function makeResizable(el) {
+      el.addEventListener('wheel', e=>{
+        if(e.ctrlKey) return; // ctrl for drag
+        let w=parseInt(el.style.width)||el.clientWidth;
+        let h=parseInt(el.style.height)||el.clientHeight;
+        w += e.deltaY<0? 20:-20;
+        h += e.deltaY<0? 15:-15;
+        el.style.width = w+'px';
+        el.style.height= h+'px';
+      });
+    }
+
+    // Audio mixer setup
+    async function setupMic() {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      gainNode = audioCtx.createGain();
+      const src = audioCtx.createMediaStreamSource(micStream);
+      src.connect(analyser);
+      analyser.connect(gainNode);
+      // DON'T connect gainNode to destination => no echo
+      gainNode.gain.value = micSlider.value;
+
+      analyser.fftSize = 256;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      function draw() {
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a,b)=>a+b,0)/data.length;
+        loudnessLevel.style.width = (avg/255*100)+'%';
+        requestAnimationFrame(draw);
+      }
+      draw();
+    }
+    micSlider.oninput = e => gainNode.gain.value = e.target.value;
+
+    setupMic();
+
+    // Recording
+    startBtn.onclick = ()=> {
+      recordedChunks = [];
+      const vids = previewArea.querySelectorAll('video');
+      if(!vids.length) return alert('Add a source first');
+      // take the first stream (you can mix multiple)
+      const stream = new MediaStream([
+        ...vids[0].srcObject.getTracks(),
+        ...micStream.getTracks()
+      ]);
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e=>recordedChunks.push(e.data);
+      mediaRecorder.onstop = ()=>{
+        const blob=new Blob(recordedChunks,{type:'video/webm'});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');
+        a.href=url; a.download='recording.webm'; a.click();
+        stopBtn.disabled=true; startBtn.disabled=false;
+      };
+      mediaRecorder.start();
+      startBtn.disabled=true; stopBtn.disabled=false;
+    };
+    stopBtn.onclick = ()=> mediaRecorder.stop();
+  </script>
+</body>
+</html>
